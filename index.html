@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>GeoJSON Globe — Lat/Lon & Geohash Probe</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Import map for Three.js + addons (latest) -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three/examples/jsm/"
+    }
+  }
+  </script>
+
+  <style>
+    :root{
+      --bg:#0b1119; --fg:#eaf2ff; --muted:#9fb3c8; --accent:#66a6ff; --ok:#42d392; --warn:#f7b955; --bad:#ff6b6b;
+      --panel:#0e1724; --border:#1b2a3c;
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:14px/1.4 system-ui,Segoe UI,Roboto,Arial}
+    #app{position:fixed;inset:0}
+    canvas{display:block}
+    .panel{
+      position:fixed; top:12px; left:12px; z-index:10; padding:12px; border-radius:12px;
+      background:color-mix(in oklab, var(--panel) 86%, transparent);
+      backdrop-filter: blur(8px); border:1px solid var(--border); max-width:min(92vw, 520px)
+    }
+    .panel h2{margin:0 0 8px 0; font-size:14px; font-weight:600; letter-spacing:.02em; color:var(--muted)}
+    .row{display:flex; gap:8px; margin-bottom:8px; align-items:center; flex-wrap:wrap}
+    .row label{font-size:12px; color:var(--muted)}
+    .row input[type="text"], .row input[type="number"]{
+      flex:1 1 120px; min-width:120px; padding:8px 10px; border-radius:10px; border:1px solid var(--border);
+      background:#0a1220; color:var(--fg); outline:none;
+    }
+    .row input[type="text"]:focus, .row input[type="number"]:focus{border-color:#27486e}
+    .row button{
+      appearance:none; border:1px solid var(--border); background:#0c1828; color:var(--fg);
+      padding:8px 12px; border-radius:10px; cursor:pointer;
+    }
+    .row button.primary{background:var(--accent); color:#031322; border-color:transparent; font-weight:600}
+    .row button:active{transform:translateY(1px)}
+    .help{font-size:12px; color:var(--muted)}
+    .status{
+      position:fixed; bottom:12px; left:12px; z-index:10; padding:8px 10px; border-radius:10px;
+      background:color-mix(in oklab, var(--panel) 86%, transparent); border:1px solid var(--border);
+      max-width:min(92vw,660px); white-space:pre-wrap
+    }
+    .legend{
+      position:fixed; top:12px; right:12px; z-index:10; padding:8px 10px; border-radius:10px;
+      background:color-mix(in oklab, var(--panel) 86%, transparent); border:1px solid var(--border);
+      font-size:12px; color:var(--muted)
+    }
+    .inline{display:inline-flex; gap:8px; align-items:center}
+    .sep{height:1px;background:var(--border);margin:8px 0}
+    @media (max-width:600px){
+      .panel{right:12px; max-width:none}
+      .row input[type="text"], .row input[type="number"]{min-width:100px}
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <div class="panel">
+    <h2>GeoJSON Globe — Probe</h2>
+
+    <div class="row">
+      <label for="gjurl">GeoJSON URL</label>
+      <input id="gjurl" type="text" spellcheck="false"
+             value="https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson" />
+      <button id="load" class="primary" title="Fetch & draw GeoJSON on the globe">Load GeoJSON</button>
+    </div>
+
+    <div class="sep"></div>
+
+    <div class="row">
+      <label for="geohash">Geohash</label>
+      <input id="geohash" type="text" placeholder="e.g. 9q8yyxk6p" />
+    </div>
+    <div class="row">
+      <label for="lat">Lat</label>
+      <input id="lat" type="number" step="any" placeholder="e.g. 37.7749" />
+      <label for="lon">Lon</label>
+      <input id="lon" type="number" step="any" placeholder="-122.4194" />
+    </div>
+    <div class="row">
+      <label for="len">Line length</label>
+      <input id="len" type="number" step="0.1" value="0.6" title="How far the probe protrudes from the globe (in radius units)"/>
+      <button id="plot" class="primary">Plot</button>
+      <button id="clear">Clear</button>
+      <span class="inline">
+        <input id="spin" type="checkbox" checked />
+        <label for="spin">Spin</label>
+      </span>
+    </div>
+    <div class="help">Enter either a <b>geohash</b> OR a <b>lat</b>/<b>lon</b>. Click <b>Plot</b> to draw a protruding line at that point.</div>
+  </div>
+
+  <div class="legend">Mouse: drag to orbit • wheel to zoom • right-drag to pan</div>
+  <div class="status" id="status">Ready.</div>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    // ---------- Basic scene ----------
+    const app = document.getElementById('app');
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    app.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x0b1119);
+
+    const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.01, 1000);
+    camera.position.set(0, 0.9, 2.2);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    const hemi = new THREE.HemisphereLight(0xc0d8ff, 0x102030, 1.0);
+    scene.add(hemi);
+    const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+    dir.position.set(2, 2, 2);
+    scene.add(dir);
+
+    // ---------- Globe base ----------
+    const R = 1.0; // base radius
+    const globe = new THREE.Mesh(
+      new THREE.SphereGeometry(R, 96, 64),
+      new THREE.MeshStandardMaterial({
+        color: 0x1a2a44,
+        roughness: 0.9,
+        metalness: 0.0,
+        emissive: new THREE.Color(0x0c1422),
+        polygonOffset: true,
+        polygonOffsetFactor: 1,
+        polygonOffsetUnits: 1
+      })
+    );
+    globe.receiveShadow = false;
+    globe.castShadow = false;
+    scene.add(globe);
+
+    // A subtle lat/lon grid for context
+    const gridMat = new THREE.LineBasicMaterial({ color: 0x335072, transparent:true, opacity:0.45 });
+    const grid = new THREE.Group();
+    scene.add(grid);
+
+    function buildMeridiansParallels(){
+      const lines = [];
+      const step = 10;
+      for(let lon=-180; lon<180; lon+=step){
+        lines.push(lineFromLonOrLat(lon, true));
+      }
+      for(let lat=-80; lat<=80; lat+=step){
+        lines.push(lineFromLonOrLat(lat, false));
+      }
+      const group = new THREE.Group();
+      lines.forEach(l => group.add(l));
+      return group;
+    }
+    function lineFromLonOrLat(value, isLon){
+      const pts = [];
+      const samples = 360;
+      for(let i=0;i<=samples;i++){
+        const t = i/samples;
+        const lon = isLon ? value : -180 + 360*t;
+        const lat = isLon ? -90 + 180*t : value;
+        pts.push(llToVec3(lat, lon, R*1.0005));
+      }
+      const geo = new THREE.BufferGeometry().setFromPoints(pts);
+      return new THREE.Line(geo, gridMat);
+    }
+    grid.add(buildMeridiansParallels());
+
+    // ---------- Layers for dynamic content ----------
+    const geoLayer = new THREE.Group();  // GeoJSON wire outlines
+    const probeLayer = new THREE.Group(); // plotted protruding lines
+    scene.add(geoLayer, probeLayer);
+
+    // ---------- Utilities ----------
+    const $ = sel => document.querySelector(sel);
+    const status = $('#status');
+
+    function setStatus(msg, tone=''){ // tone: '', ok, warn, bad
+      status.textContent = msg;
+      const map={ok:'var(--ok)',warn:'var(--warn)',bad:'var(--bad)'};
+      status.style.borderColor = map[tone] || 'var(--border)';
+    }
+
+    function toRad(d){ return d * Math.PI/180; }
+    // Convert lat,lon (degrees) to 3D position on sphere of radius r
+    function llToVec3(latDeg, lonDeg, r=R){
+      const phi = toRad(90 - latDeg);          // polar angle
+      const theta = toRad(lonDeg + 180);       // azimuthal
+      const x = -r * Math.sin(phi) * Math.cos(theta);
+      const z =  r * Math.sin(phi) * Math.sin(theta);
+      const y =  r * Math.cos(phi);
+      return new THREE.Vector3(x,y,z);
+    }
+
+    // Densify a path of [lon,lat] pairs to avoid long chords; returns array of {lat,lon}
+    function densifyLonLat(path, maxDeg=2){
+      if(path.length < 2) return path.map(([lon,lat])=>({lat,lon}));
+      const out = [];
+      for(let i=0;i<path.length-1;i++){
+        let [lon1, lat1] = path[i];
+        let [lon2, lat2] = path[i+1];
+
+        // unwrap longitudes to follow shortest path across dateline
+        let dlon = ((lon2 - lon1 + 540) % 360) - 180;
+        const dlat = (lat2 - lat1);
+        const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dlon), Math.abs(dlat)) / maxDeg));
+        for(let s=0;s<steps;s++){
+          const t = s/steps;
+          const lon = lon1 + dlon * t;
+          const lat = lat1 + dlat * t;
+          out.push({lat, lon});
+        }
+      }
+      // include final point
+      const [lonF, latF] = path[path.length-1];
+      out.push({lat:latF, lon:lonF});
+      return out;
+    }
+
+    // Tiny Geohash decoder (base32) → {lat, lon}
+    function decodeGeohash(gh){
+      const base32 = '0123456789bcdefghjkmnpqrstuvwxyz';
+      let even = true, lat = [-90, 90], lon = [-180, 180], latErr=90, lonErr=180;
+      for(const ch of (gh||'').toLowerCase()){
+        const cd = base32.indexOf(ch);
+        if(cd === -1) continue;
+        for(let mask=16; mask>0; mask >>= 1){
+          if(even){
+            lonErr /= 2;
+            ((cd & mask) ? (lon[0] = (lon[0]+lon[1])/2) : (lon[1] = (lon[0]+lon[1])/2));
+          }else{
+            latErr /= 2;
+            ((cd & mask) ? (lat[0] = (lat[0]+lat[1])/2) : (lat[1] = (lat[0]+lat[1])/2));
+          }
+          even = !even;
+        }
+      }
+      return { lat:(lat[0]+lat[1])/2, lon:(lon[0]+lon[1])/2, latErr, lonErr };
+    }
+
+    // ---------- GeoJSON loader & drawer ----------
+    async function loadGeoJSON(url){
+      setStatus('Loading GeoJSON…');
+      try{
+        const res = await fetch(url, { mode:'cors' });
+        if(!res.ok) throw new Error(res.status+' '+res.statusText);
+        const gj = await res.json();
+        drawGeoJSON(gj);
+        setStatus('GeoJSON loaded.', 'ok');
+      }catch(err){
+        console.error(err);
+        setStatus('Failed to load GeoJSON: ' + (err?.message || err), 'bad');
+      }
+    }
+
+    function clearGroup(g){
+      for(let i=g.children.length-1;i>=0;i--){
+        const obj = g.children[i];
+        if(obj.geometry) obj.geometry.dispose?.();
+        if(obj.material){
+          if(Array.isArray(obj.material)) obj.material.forEach(m=>m.dispose?.());
+          else obj.material.dispose?.();
+        }
+        g.remove(obj);
+      }
+    }
+
+    function drawGeoJSON(gj){
+      clearGroup(geoLayer);
+
+      const matCoast = new THREE.LineBasicMaterial({ color: 0x84c5ff, transparent:true, opacity: 0.85 });
+      const matInner = new THREE.LineBasicMaterial({ color: 0x3aa0ff, transparent:true, opacity: 0.35 });
+
+      const asLines = (rings, isOuter) => {
+        rings.forEach((ring) => {
+          const dense = densifyLonLat(ring);
+          const pts = dense.map(p => llToVec3(p.lat, p.lon, R*1.001));
+          // close ring
+          if(pts.length>2) pts.push(pts[0].clone());
+          const geo = new THREE.BufferGeometry().setFromPoints(pts);
+          const line = new THREE.Line(geo, isOuter ? matCoast : matInner);
+          geoLayer.add(line);
+        });
+      };
+
+      const walk = (geom) => {
+        if(!geom) return;
+        const t = geom.type;
+        if(t === 'Polygon'){
+          // coordinates: [ [ [lon,lat], ... ] outerRing, hole1, ... ]
+          const rings = geom.coordinates.map(r => r.map(([lon,lat])=>[lon,lat]));
+          if(rings.length) asLines([rings[0]], true);
+          if(rings.length>1) asLines(rings.slice(1), false);
+        } else if (t === 'MultiPolygon'){
+          geom.coordinates.forEach(poly => {
+            const rings = poly.map(r => r.map(([lon,lat])=>[lon,lat]));
+            if(rings.length) asLines([rings[0]], true);
+            if(rings.length>1) asLines(rings.slice(1), false);
+          });
+        } else if (t === 'LineString'){
+          const line = geom.coordinates.map(([lon,lat])=>[lon,lat]);
+          const dense = densifyLonLat(line);
+          const pts = dense.map(p => llToVec3(p.lat, p.lon, R*1.001));
+          const geo = new THREE.BufferGeometry().setFromPoints(pts);
+          geoLayer.add(new THREE.Line(geo, matCoast));
+        } else if (t === 'MultiLineString'){
+          geom.coordinates.forEach(line=>{
+            const dense = densifyLonLat(line.map(([lon,lat])=>[lon,lat]));
+            const pts = dense.map(p => llToVec3(p.lat, p.lon, R*1.001));
+            const geo = new THREE.BufferGeometry().setFromPoints(pts);
+            geoLayer.add(new THREE.Line(geo, matCoast));
+          });
+        } else if (t === 'GeometryCollection'){
+          (geom.geometries||[]).forEach(walk);
+        }
+      };
+
+      if(gj.type === 'FeatureCollection'){
+        for(const f of gj.features||[]){ walk(f.geometry); }
+      } else if (gj.type === 'Feature'){
+        walk(gj.geometry);
+      } else {
+        walk(gj);
+      }
+    }
+
+    // ---------- Probe plotting ----------
+    function plotProbeAt(lat, lon, length=0.6){
+      // Clamp / validate
+      if(!isFinite(lat) || !isFinite(lon)){
+        setStatus('Invalid lat/lon.', 'bad');
+        return;
+      }
+      lat = Math.max(-90, Math.min(90, lat));
+      lon = ((lon + 540) % 360) - 180;
+
+      const base = llToVec3(lat, lon, R*1.002);
+      const dir  = base.clone().normalize(); // outward normal
+      const tip  = base.clone().addScaledVector(dir, length);
+
+      // Line
+      const g = new THREE.BufferGeometry().setFromPoints([base, tip]);
+      const mat = new THREE.LineBasicMaterial({ color: 0xffe066 });
+      const line = new THREE.Line(g, mat);
+
+      // Tip marker
+      const tipMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(0.01, 16, 12),
+        new THREE.MeshStandardMaterial({ color: 0xffe066, emissive: 0x332100 })
+      );
+      tipMesh.position.copy(tip);
+
+      // Base pulse ring
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(0.010, 0.014, 32),
+        new THREE.MeshBasicMaterial({ color: 0xffe066, transparent:true, opacity:0.7, side:THREE.DoubleSide })
+      );
+      // orient ring tangent to surface
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1), dir);
+      ring.quaternion.copy(q);
+      ring.position.copy(base);
+
+      probeLayer.add(line, tipMesh, ring);
+      setStatus(`Plotted @ lat ${lat.toFixed(6)}, lon ${lon.toFixed(6)}`, 'ok');
+    }
+
+    // ---------- Wire up UI ----------
+    const gjurl = $('#gjurl');
+    const loadBtn = $('#load');
+    const ghIn = $('#geohash');
+    const latIn = $('#lat');
+    const lonIn = $('#lon');
+    const lenIn = $('#len');
+    const plotBtn = $('#plot');
+    const clearBtn = $('#clear');
+    const spinChk = $('#spin');
+
+    loadBtn.addEventListener('click', ()=> loadGeoJSON(gjurl.value.trim()));
+    plotBtn.addEventListener('click', ()=>{
+      const gh = ghIn.value.trim();
+      let lat = parseFloat(latIn.value);
+      let lon = parseFloat(lonIn.value);
+
+      if(gh){
+        const dec = decodeGeohash(gh);
+        lat = dec.lat; lon = dec.lon;
+      }
+      const length = parseFloat(lenIn.value) || 0.6;
+      plotProbeAt(lat, lon, length);
+    });
+    clearBtn.addEventListener('click', ()=> {
+      clearGroup(probeLayer);
+      setStatus('Cleared probes.');
+    });
+
+    // Enter to plot when focused in any input
+    [ghIn,latIn,lonIn,lenIn].forEach(inp => {
+      inp.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ plotBtn.click(); }});
+    });
+
+    // ---------- Animate ----------
+    let t = 0, spinning = true;
+    spinChk.addEventListener('change', ()=> { spinning = spinChk.checked; });
+
+    function onResize(){
+      camera.aspect = innerWidth/innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    }
+    addEventListener('resize', onResize);
+
+    // Auto-load default GeoJSON once
+    loadGeoJSON(gjurl.value.trim());
+
+    (function loop(){
+      requestAnimationFrame(loop);
+      t += 1/60;
+      if(spinning){
+        globe.rotation.y += 0.0032;
+        geoLayer.rotation.y += 0.0032;
+        grid.rotation.y += 0.0032;
+        probeLayer.rotation.y += 0.0032;
+      }
+      controls.update();
+      renderer.render(scene, camera);
+    })();
+  </script>
+</body>
+</html>
+

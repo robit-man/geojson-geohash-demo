@@ -97,10 +97,10 @@
         <label for="spin">Spin</label>
       </span>
     </div>
-    <div class="help">Enter either a <b>geohash</b> OR a <b>lat</b>/<b>lon</b>. Click <b>Plot</b> to draw a protruding line at that point.</div>
+    <div class="help">Enter a <b>geohash</b> OR <b>lat/lon</b>, or <b>click the globe</b> to fill them. Click <b>Plot</b> to draw a protruding line.</div>
   </div>
 
-  <div class="legend">Mouse: drag to orbit • wheel to zoom • right-drag to pan</div>
+  <div class="legend">Mouse: drag to orbit • wheel to zoom • right-drag to pan • click globe to select</div>
   <div class="status" id="status">Ready.</div>
 
   <script type="module">
@@ -180,22 +180,22 @@
     }
     grid.add(buildMeridiansParallels());
 
-    // ---------- Layers for dynamic content ----------
-    const geoLayer = new THREE.Group();  // GeoJSON wire outlines
+    // ---------- Layers ----------
+    const geoLayer = new THREE.Group();   // GeoJSON wire outlines
     const probeLayer = new THREE.Group(); // plotted protruding lines
     scene.add(geoLayer, probeLayer);
 
     // ---------- Utilities ----------
     const $ = sel => document.querySelector(sel);
     const status = $('#status');
-
     function setStatus(msg, tone=''){ // tone: '', ok, warn, bad
       status.textContent = msg;
       const map={ok:'var(--ok)',warn:'var(--warn)',bad:'var(--bad)'};
       status.style.borderColor = map[tone] || 'var(--border)';
     }
-
     function toRad(d){ return d * Math.PI/180; }
+    function toDeg(r){ return r * 180/Math.PI; }
+
     // Convert lat,lon (degrees) to 3D position on sphere of radius r
     function llToVec3(latDeg, lonDeg, r=R){
       const phi = toRad(90 - latDeg);          // polar angle
@@ -206,16 +206,28 @@
       return new THREE.Vector3(x,y,z);
     }
 
-    // Densify a path of [lon,lat] pairs to avoid long chords; returns array of {lat,lon}
+    // Inverse of llToVec3 — expects point in GLOBE LOCAL coordinates
+    function vec3ToLL(pLocal){
+      const n = pLocal.clone().normalize();
+      // φ = acos(y), lat = 90 - φ°
+      const phi = Math.acos(THREE.MathUtils.clamp(n.y, -1, 1));
+      const lat = 90 - toDeg(phi);
+      // θ from mapping: x = -sinφ cosθ, z = sinφ sinθ  ⇒  θ = atan2(z, -x)
+      const theta = Math.atan2(n.z, -n.x);
+      let lon = toDeg(theta) - 180;
+      // normalize to [-180, 180)
+      lon = ((lon + 540) % 360) - 180;
+      return { lat, lon };
+    }
+
+    // Densify path of [lon,lat] pairs for curved lines
     function densifyLonLat(path, maxDeg=2){
       if(path.length < 2) return path.map(([lon,lat])=>({lat,lon}));
       const out = [];
       for(let i=0;i<path.length-1;i++){
         let [lon1, lat1] = path[i];
         let [lon2, lat2] = path[i+1];
-
-        // unwrap longitudes to follow shortest path across dateline
-        let dlon = ((lon2 - lon1 + 540) % 360) - 180;
+        let dlon = ((lon2 - lon1 + 540) % 360) - 180; // shortest wrap
         const dlat = (lat2 - lat1);
         const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dlon), Math.abs(dlat)) / maxDeg));
         for(let s=0;s<steps;s++){
@@ -225,13 +237,12 @@
           out.push({lat, lon});
         }
       }
-      // include final point
       const [lonF, latF] = path[path.length-1];
       out.push({lat:latF, lon:lonF});
       return out;
     }
 
-    // Tiny Geohash decoder (base32) → {lat, lon}
+    // Geohash decode → {lat, lon}
     function decodeGeohash(gh){
       const base32 = '0123456789bcdefghjkmnpqrstuvwxyz';
       let even = true, lat = [-90, 90], lon = [-180, 180], latErr=90, lonErr=180;
@@ -250,6 +261,24 @@
         }
       }
       return { lat:(lat[0]+lat[1])/2, lon:(lon[0]+lon[1])/2, latErr, lonErr };
+    }
+
+    // Geohash encode from lat,lon
+    function encodeGeohash(lat, lon, precision=9){
+      const base32 = '0123456789bcdefghjkmnpqrstuvwxyz';
+      let even = true, latR=[-90,90], lonR=[-180,180], bits=[16,8,4,2,1], ch=0, bit=0, hash='';
+      for(let i=0; i<precision; ){
+        if(even){
+          const mid=(lonR[0]+lonR[1])/2;
+          if(lon >= mid){ ch |= bits[bit]; lonR[0]=mid; } else { lonR[1]=mid; }
+        } else {
+          const mid=(latR[0]+latR[1])/2;
+          if(lat >= mid){ ch |= bits[bit]; latR[0]=mid; } else { latR[1]=mid; }
+        }
+        even=!even;
+        if(bit<4){ bit++; } else { hash += base32[ch]; i++; ch=0; bit=0; }
+      }
+      return hash;
     }
 
     // ---------- GeoJSON loader & drawer ----------
@@ -289,8 +318,7 @@
         rings.forEach((ring) => {
           const dense = densifyLonLat(ring);
           const pts = dense.map(p => llToVec3(p.lat, p.lon, R*1.001));
-          // close ring
-          if(pts.length>2) pts.push(pts[0].clone());
+          if(pts.length>2) pts.push(pts[0].clone()); // close ring
           const geo = new THREE.BufferGeometry().setFromPoints(pts);
           const line = new THREE.Line(geo, isOuter ? matCoast : matInner);
           geoLayer.add(line);
@@ -301,7 +329,6 @@
         if(!geom) return;
         const t = geom.type;
         if(t === 'Polygon'){
-          // coordinates: [ [ [lon,lat], ... ] outerRing, hole1, ... ]
           const rings = geom.coordinates.map(r => r.map(([lon,lat])=>[lon,lat]));
           if(rings.length) asLines([rings[0]], true);
           if(rings.length>1) asLines(rings.slice(1), false);
@@ -340,36 +367,30 @@
 
     // ---------- Probe plotting ----------
     function plotProbeAt(lat, lon, length=0.6){
-      // Clamp / validate
       if(!isFinite(lat) || !isFinite(lon)){
-        setStatus('Invalid lat/lon.', 'bad');
-        return;
+        setStatus('Invalid lat/lon.', 'bad'); return;
       }
       lat = Math.max(-90, Math.min(90, lat));
       lon = ((lon + 540) % 360) - 180;
 
       const base = llToVec3(lat, lon, R*1.002);
-      const dir  = base.clone().normalize(); // outward normal
+      const dir  = base.clone().normalize();
       const tip  = base.clone().addScaledVector(dir, length);
 
-      // Line
       const g = new THREE.BufferGeometry().setFromPoints([base, tip]);
       const mat = new THREE.LineBasicMaterial({ color: 0xffe066 });
       const line = new THREE.Line(g, mat);
 
-      // Tip marker
       const tipMesh = new THREE.Mesh(
         new THREE.SphereGeometry(0.01, 16, 12),
         new THREE.MeshStandardMaterial({ color: 0xffe066, emissive: 0x332100 })
       );
       tipMesh.position.copy(tip);
 
-      // Base pulse ring
       const ring = new THREE.Mesh(
         new THREE.RingGeometry(0.010, 0.014, 32),
         new THREE.MeshBasicMaterial({ color: 0xffe066, transparent:true, opacity:0.7, side:THREE.DoubleSide })
       );
-      // orient ring tangent to surface
       const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1), dir);
       ring.quaternion.copy(q);
       ring.position.copy(base);
@@ -378,7 +399,7 @@
       setStatus(`Plotted @ lat ${lat.toFixed(6)}, lon ${lon.toFixed(6)}`, 'ok');
     }
 
-    // ---------- Wire up UI ----------
+    // ---------- UI wiring ----------
     const gjurl = $('#gjurl');
     const loadBtn = $('#load');
     const ghIn = $('#geohash');
@@ -407,13 +428,52 @@
       setStatus('Cleared probes.');
     });
 
-    // Enter to plot when focused in any input
     [ghIn,latIn,lonIn,lenIn].forEach(inp => {
       inp.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ plotBtn.click(); }});
     });
 
+    // ---------- Click-to-fill inputs (raycast → local → lat/lon) ----------
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    let down = null;
+
+    function pointerToNDC(e){
+      const rect = renderer.domElement.getBoundingClientRect();
+      ndc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+      ndc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    }
+
+    renderer.domElement.addEventListener('pointerdown', (e)=>{
+      if(e.button !== 0) return;
+      down = {x:e.clientX, y:e.clientY};
+    });
+
+    renderer.domElement.addEventListener('pointerup', (e)=>{
+      if(e.button !== 0) return;
+      if(!down) return;
+      const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+      down = null;
+      if(moved > 5) return; // drag, not click
+
+      pointerToNDC(e);
+      raycaster.setFromCamera(ndc, camera);
+      const hits = raycaster.intersectObject(globe, false); // only the sphere
+      if(!hits.length) return;
+
+      // Convert hit point to GLOBE LOCAL coordinates before inverting
+      const pLocal = globe.worldToLocal(hits[0].point.clone());
+      const {lat, lon} = vec3ToLL(pLocal);
+
+      latIn.value = lat.toFixed(6);
+      lonIn.value = lon.toFixed(6);
+      const prec = Math.max(1, Math.min(12, (ghIn.value.trim().length || 9)));
+      ghIn.value = encodeGeohash(lat, lon, prec);
+
+      setStatus(`Picked @ lat ${lat.toFixed(6)}, lon ${lon.toFixed(6)} • geohash ${ghIn.value}`, 'ok');
+    });
+
     // ---------- Animate ----------
-    let t = 0, spinning = true;
+    let spinning = true;
     spinChk.addEventListener('change', ()=> { spinning = spinChk.checked; });
 
     function onResize(){
@@ -428,7 +488,6 @@
 
     (function loop(){
       requestAnimationFrame(loop);
-      t += 1/60;
       if(spinning){
         globe.rotation.y += 0.0032;
         geoLayer.rotation.y += 0.0032;
@@ -441,4 +500,3 @@
   </script>
 </body>
 </html>
-

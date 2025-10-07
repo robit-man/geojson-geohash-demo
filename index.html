@@ -2,10 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <title>GeoJSON Globe — Lat/Lon & Geohash Probe</title>
+  <title>GeoJSON Globe — Terrain-Draped GeoJSON + Probe</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
-  <!-- Import map for Three.js + addons (latest) -->
   <script type="importmap">
   {
     "imports": {
@@ -27,13 +26,13 @@
     .panel{
       position:fixed; top:12px; left:12px; z-index:10; padding:12px; border-radius:12px;
       background:color-mix(in oklab, var(--panel) 86%, transparent);
-      backdrop-filter: blur(8px); border:1px solid var(--border); max-width:min(92vw, 520px)
+      backdrop-filter: blur(8px); border:1px solid var(--border); max-width:min(92vw, 620px)
     }
     .panel h2{margin:0 0 8px 0; font-size:14px; font-weight:600; letter-spacing:.02em; color:var(--muted)}
     .row{display:flex; gap:8px; margin-bottom:8px; align-items:center; flex-wrap:wrap}
     .row label{font-size:12px; color:var(--muted)}
     .row input[type="text"], .row input[type="number"]{
-      flex:1 1 120px; min-width:120px; padding:8px 10px; border-radius:10px; border:1px solid var(--border);
+      flex:1 1 120px; min-width:110px; padding:8px 10px; border-radius:10px; border:1px solid var(--border);
       background:#0a1220; color:var(--fg); outline:none;
     }
     .row input[type="text"]:focus, .row input[type="number"]:focus{border-color:#27486e}
@@ -47,7 +46,7 @@
     .status{
       position:fixed; bottom:12px; left:12px; z-index:10; padding:8px 10px; border-radius:10px;
       background:color-mix(in oklab, var(--panel) 86%, transparent); border:1px solid var(--border);
-      max-width:min(92vw,660px); white-space:pre-wrap
+      max-width:min(92vw,860px); white-space:pre-wrap
     }
     .legend{
       position:fixed; top:12px; right:12px; z-index:10; padding:8px 10px; border-radius:10px;
@@ -56,23 +55,36 @@
     }
     .inline{display:inline-flex; gap:8px; align-items:center}
     .sep{height:1px;background:var(--border);margin:8px 0}
-    @media (max-width:600px){
-      .panel{right:12px; max-width:none}
-      .row input[type="text"], .row input[type="number"]{min-width:100px}
-    }
   </style>
 </head>
 <body>
   <div id="app"></div>
 
   <div class="panel">
-    <h2>GeoJSON Globe — Probe</h2>
+    <h2>GeoJSON Globe — Terrain-Draped</h2>
 
     <div class="row">
       <label for="gjurl">GeoJSON URL</label>
       <input id="gjurl" type="text" spellcheck="false"
              value="https://raw.githubusercontent.com/datasets/geo-countries/master/data/countries.geojson" />
-      <button id="load" class="primary" title="Fetch & draw GeoJSON on the globe">Load GeoJSON</button>
+      <button id="load" class="primary">Load GeoJSON</button>
+      <span class="inline">
+        <input id="spin" type="checkbox" checked />
+        <label for="spin">Spin</label>
+      </span>
+    </div>
+
+    <div class="row">
+      <label for="hmurl">Heightmap</label>
+      <input id="hmurl" type="text" spellcheck="false"
+             value="EARTH_DISPLACE_21K_16BITS.jpg" />
+      <label for="subdiv">Subdiv</label>
+      <input id="subdiv" type="number" min="5" max="128" step="1" value="64" title="Icosahedron subdivisions"/>
+      <label for="hscale">Scale</label>
+      <input id="hscale" type="number" step="0.001" value="0.128" title="Displacement scale (fraction of radius)"/>
+      <label for="hbias">Bias</label>
+      <input id="hbias" type="number" step="0.001" value="-0.014" title="Displacement bias (centers sea level)"/>
+      <button id="loadHM">Load Heightmap</button>
     </div>
 
     <div class="sep"></div>
@@ -86,18 +98,13 @@
       <input id="lat" type="number" step="any" placeholder="e.g. 37.7749" />
       <label for="lon">Lon</label>
       <input id="lon" type="number" step="any" placeholder="-122.4194" />
-    </div>
-    <div class="row">
-      <label for="len">Line length</label>
-      <input id="len" type="number" step="0.1" value="0.6" title="How far the probe protrudes from the globe (in radius units)"/>
+      <label for="len">Line len</label>
+      <input id="len" type="number" step="0.1" value="0.6" title="Probe length in radii"/>
       <button id="plot" class="primary">Plot</button>
       <button id="clear">Clear</button>
-      <span class="inline">
-        <input id="spin" type="checkbox" checked />
-        <label for="spin">Spin</label>
-      </span>
     </div>
-    <div class="help">Enter a <b>geohash</b> OR <b>lat/lon</b>, or <b>click the globe</b> to fill them. Click <b>Plot</b> to draw a protruding line.</div>
+
+    <div class="help">Click the globe to fill Lat/Lon/Geohash. Load heightmap to see relief. Plot adds an outward probe.</div>
   </div>
 
   <div class="legend">Mouse: drag to orbit • wheel to zoom • right-drag to pan • click globe to select</div>
@@ -107,7 +114,7 @@
     import * as THREE from 'three';
     import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-    // ---------- Basic scene ----------
+    // ---------- Scene ----------
     const app = document.getElementById('app');
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -126,168 +133,185 @@
 
     const hemi = new THREE.HemisphereLight(0xc0d8ff, 0x102030, 1.0);
     scene.add(hemi);
-    const dir = new THREE.DirectionalLight(0xffffff, 0.6);
+    const dir = new THREE.DirectionalLight(0xffffff, 0.7);
     dir.position.set(2, 2, 2);
     scene.add(dir);
 
-    // ---------- Globe base ----------
-    const R = 1.0; // base radius
+    // ---------- Planet container (unified transform) ----------
+    const planet = new THREE.Group();
+    scene.add(planet);
+
+    // Invisible base sphere (kept for robust picking fallback)
+    const R = 1.0;
     const globe = new THREE.Mesh(
       new THREE.SphereGeometry(R, 96, 64),
-      new THREE.MeshStandardMaterial({
-        color: 0x1a2a44,
-        roughness: 0.9,
-        metalness: 0.0,
-        emissive: new THREE.Color(0x0c1422),
-        polygonOffset: true,
-        polygonOffsetFactor: 1,
-        polygonOffsetUnits: 1
-      })
+      new THREE.MeshBasicMaterial({ visible:false })
     );
-    globe.receiveShadow = false;
-    globe.castShadow = false;
-    scene.add(globe);
+    planet.add(globe);
 
-    // A subtle lat/lon grid for context
-    const gridMat = new THREE.LineBasicMaterial({ color: 0x335072, transparent:true, opacity:0.45 });
-    const grid = new THREE.Group();
-    scene.add(grid);
+    // Layers inside planet
+    let heightMesh = null;            // Icosahedron w/ displacement
+    const geoLayer = new THREE.Group();
+    const probeLayer = new THREE.Group();
+    planet.add(geoLayer, probeLayer);
 
+    // (Optional) grid — hidden by default
+    const gridMat = new THREE.LineBasicMaterial({ color: 0x335072, transparent:true, opacity:0.0 });
+    const grid = new THREE.Group(); planet.add(grid);
     function buildMeridiansParallels(){
-      const lines = [];
-      const step = 10;
-      for(let lon=-180; lon<180; lon+=step){
-        lines.push(lineFromLonOrLat(lon, true));
-      }
-      for(let lat=-80; lat<=80; lat+=step){
-        lines.push(lineFromLonOrLat(lat, false));
-      }
-      const group = new THREE.Group();
-      lines.forEach(l => group.add(l));
-      return group;
-    }
-    function lineFromLonOrLat(value, isLon){
-      const pts = [];
-      const samples = 360;
-      for(let i=0;i<=samples;i++){
-        const t = i/samples;
-        const lon = isLon ? value : -180 + 360*t;
-        const lat = isLon ? -90 + 180*t : value;
-        pts.push(llToVec3(lat, lon, R*1.0005));
-      }
-      const geo = new THREE.BufferGeometry().setFromPoints(pts);
-      return new THREE.Line(geo, gridMat);
+      const lines = [], step = 10, samples = 360;
+      const lineFromLonOrLat = (value, isLon)=>{
+        const pts=[];
+        for(let i=0;i<=samples;i++){
+          const t=i/samples;
+          const lon = isLon? value : -180 + 360*t;
+          const lat = isLon? -90 + 180*t : value;
+          pts.push(llToVec3(lat, lon, R*1.0005));
+        }
+        return new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), gridMat);
+      };
+      for(let lon=-180; lon<180; lon+=step) lines.push(lineFromLonOrLat(lon, true));
+      for(let lat=-80; lat<=80; lat+=step) lines.push(lineFromLonOrLat(lat, false));
+      const g=new THREE.Group(); lines.forEach(l=>g.add(l)); return g;
     }
     grid.add(buildMeridiansParallels());
 
-    // ---------- Layers ----------
-    const geoLayer = new THREE.Group();   // GeoJSON wire outlines
-    const probeLayer = new THREE.Group(); // plotted protruding lines
-    scene.add(geoLayer, probeLayer);
-
-    // ---------- Utilities ----------
-    const $ = sel => document.querySelector(sel);
+    // ---------- DOM ----------
+    const $ = s => document.querySelector(s);
     const status = $('#status');
-    function setStatus(msg, tone=''){ // tone: '', ok, warn, bad
+    const gjurl = $('#gjurl'), loadBtn = $('#load');
+    const hmurl = $('#hmurl'), loadHMBtn = $('#loadHM');
+    const subdivIn = $('#subdiv'), hscaleIn = $('#hscale'), hbiasIn = $('#hbias');
+    const ghIn = $('#geohash'), latIn = $('#lat'), lonIn = $('#lon'), lenIn = $('#len');
+    const plotBtn = $('#plot'), clearBtn = $('#clear'), spinChk = $('#spin');
+
+    function setStatus(msg, tone=''){
       status.textContent = msg;
-      const map={ok:'var(--ok)',warn:'var(--warn)',bad:'var(--bad)'};
-      status.style.borderColor = map[tone] || 'var(--border)';
+      status.style.borderColor = ({ok:'var(--ok)',warn:'var(--warn)',bad:'var(--bad)'}[tone]) || 'var(--border)';
     }
+
+    // ---------- Math helpers ----------
     function toRad(d){ return d * Math.PI/180; }
     function toDeg(r){ return r * 180/Math.PI; }
 
-    // Convert lat,lon (degrees) to 3D position on sphere of radius r
     function llToVec3(latDeg, lonDeg, r=R){
-      const phi = toRad(90 - latDeg);          // polar angle
-      const theta = toRad(lonDeg + 180);       // azimuthal
+      const phi = toRad(90 - latDeg);
+      const theta = toRad(lonDeg + 180);
       const x = -r * Math.sin(phi) * Math.cos(theta);
       const z =  r * Math.sin(phi) * Math.sin(theta);
       const y =  r * Math.cos(phi);
       return new THREE.Vector3(x,y,z);
     }
-
-    // Inverse of llToVec3 — expects point in GLOBE LOCAL coordinates
     function vec3ToLL(pLocal){
       const n = pLocal.clone().normalize();
-      // φ = acos(y), lat = 90 - φ°
       const phi = Math.acos(THREE.MathUtils.clamp(n.y, -1, 1));
       const lat = 90 - toDeg(phi);
-      // θ from mapping: x = -sinφ cosθ, z = sinφ sinθ  ⇒  θ = atan2(z, -x)
       const theta = Math.atan2(n.z, -n.x);
       let lon = toDeg(theta) - 180;
-      // normalize to [-180, 180)
       lon = ((lon + 540) % 360) - 180;
       return { lat, lon };
     }
 
-    // Densify path of [lon,lat] pairs for curved lines
-    function densifyLonLat(path, maxDeg=2){
-      if(path.length < 2) return path.map(([lon,lat])=>({lat,lon}));
-      const out = [];
-      for(let i=0;i<path.length-1;i++){
-        let [lon1, lat1] = path[i];
-        let [lon2, lat2] = path[i+1];
-        let dlon = ((lon2 - lon1 + 540) % 360) - 180; // shortest wrap
-        const dlat = (lat2 - lat1);
-        const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dlon), Math.abs(dlat)) / maxDeg));
-        for(let s=0;s<steps;s++){
-          const t = s/steps;
-          const lon = lon1 + dlon * t;
-          const lat = lat1 + dlat * t;
-          out.push({lat, lon});
-        }
-      }
-      const [lonF, latF] = path[path.length-1];
-      out.push({lat:latF, lon:lonF});
-      return out;
+    // ---------- Height sampler (CPU) matching shader displacement ----------
+    const loader = new THREE.TextureLoader(); loader.setCrossOrigin('anonymous');
+    let sampler = {
+      ready: false, data: null, w: 0, h: 0,
+      uOffset: 0.0, // IMPORTANT: CPU sampler uses *no yaw*. GPU offset fixes geometry UVs.
+      scaleR: 0.128 * R, biasR: -0.014 * R,
+      baseRadius: R * 1.0008,
+    };
+
+    function buildSamplerFromImage(img, scale, bias){
+      // draw to hidden canvas to get 8-bit RGBA
+      const can = document.createElement('canvas'); const ctx = can.getContext('2d', { willReadFrequently:true });
+      can.width = img.naturalWidth || img.width; can.height = img.naturalHeight || img.height;
+      ctx.drawImage(img, 0, 0, can.width, can.height);
+      const id = ctx.getImageData(0, 0, can.width, can.height);
+      sampler.data = id.data; sampler.w = can.width; sampler.h = can.height;
+      sampler.scaleR = scale * R; sampler.biasR = bias * R;
+      sampler.ready = true;
     }
 
-    // Geohash decode → {lat, lon}
-    function decodeGeohash(gh){
-      const base32 = '0123456789bcdefghjkmnpqrstuvwxyz';
-      let even = true, lat = [-90, 90], lon = [-180, 180], latErr=90, lonErr=180;
-      for(const ch of (gh||'').toLowerCase()){
-        const cd = base32.indexOf(ch);
-        if(cd === -1) continue;
-        for(let mask=16; mask>0; mask >>= 1){
-          if(even){
-            lonErr /= 2;
-            ((cd & mask) ? (lon[0] = (lon[0]+lon[1])/2) : (lon[1] = (lon[0]+lon[1])/2));
-          }else{
-            latErr /= 2;
-            ((cd & mask) ? (lat[0] = (lat[0]+lat[1])/2) : (lat[1] = (lat[0]+lat[1])/2));
-          }
-          even = !even;
-        }
-      }
-      return { lat:(lat[0]+lat[1])/2, lon:(lon[0]+lon[1])/2, latErr, lonErr };
+    function sampleHeightUV(u, v){
+      // CPU DRAPE: sample the image at (lon,lat) directly — do NOT apply the +0.5 yaw here.
+      if(!sampler.ready || !sampler.data) return 0.0;
+      // (keep hook if you want to experiment, but it's 0.0 by default)
+      u = (u + sampler.uOffset) % 1; if(u<0) u+=1;
+      v = THREE.MathUtils.clamp(v, 0, 1);
+      const x = Math.min(sampler.w - 1, Math.max(0, Math.floor(u * sampler.w)));
+      const y = Math.min(sampler.h - 1, Math.max(0, Math.floor(v * sampler.h)));
+      const i = (y * sampler.w + x) * 4;
+      return sampler.data[i] / 255.0; // red channel
     }
 
-    // Geohash encode from lat,lon
-    function encodeGeohash(lat, lon, precision=9){
-      const base32 = '0123456789bcdefghjkmnpqrstuvwxyz';
-      let even = true, latR=[-90,90], lonR=[-180,180], bits=[16,8,4,2,1], ch=0, bit=0, hash='';
-      for(let i=0; i<precision; ){
-        if(even){
-          const mid=(lonR[0]+lonR[1])/2;
-          if(lon >= mid){ ch |= bits[bit]; lonR[0]=mid; } else { lonR[1]=mid; }
-        } else {
-          const mid=(latR[0]+latR[1])/2;
-          if(lat >= mid){ ch |= bits[bit]; latR[0]=mid; } else { latR[1]=mid; }
-        }
-        even=!even;
-        if(bit<4){ bit++; } else { hash += base32[ch]; i++; ch=0; bit=0; }
-      }
-      return hash;
+    function radiusAtLL(lat, lon){
+      // equirectangular UV mapping
+      const u = (lon + 180) / 360;
+      const v = (90 - lat) / 180;
+      const h = sampleHeightUV(u, v);
+      return sampler.baseRadius + sampler.biasR + sampler.scaleR * h;
     }
 
-    // ---------- GeoJSON loader & drawer ----------
+    // ---------- Heightmap mesh (GPU) ----------
+    async function loadHeightOverlay(url, subdiv=64, scale=0.128, bias=-0.014){
+      setStatus('Loading heightmap…');
+      try{
+        const tex = await new Promise((resolve, reject)=> loader.load(url, resolve, undefined, reject));
+        tex.generateMipmaps = true;
+        tex.minFilter = THREE.LinearMipmapLinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        tex.wrapS = THREE.RepeatWrapping;
+        tex.wrapT = THREE.RepeatWrapping;
+        tex.offset.x = 0.5;                       // GPU: 180° yaw to align geometry UVs to the image
+        tex.colorSpace = THREE.LinearSRGBColorSpace;
+
+        // Rebuild the mesh
+        if(heightMesh){
+          heightMesh.geometry.dispose();
+          heightMesh.material?.dispose?.();
+          planet.remove(heightMesh);
+          heightMesh = null;
+        }
+        sampler.baseRadius = R * 1.0008;
+
+        const detail = Math.max(1, Math.min(128, parseInt(subdiv,10)||64));
+        const geom = new THREE.IcosahedronGeometry(sampler.baseRadius, detail);
+        const mat = new THREE.MeshStandardMaterial({
+          color: 0x84c5ff, roughness: 0.5, metalness: 0.0, wireframe:true,
+          displacementMap: tex,
+          displacementScale: scale * R,
+          displacementBias:  bias * R,
+          transparent: true, opacity: 0.65,
+          polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1
+        });
+        heightMesh = new THREE.Mesh(geom, mat);
+        heightMesh.frustumCulled = true;
+        planet.add(heightMesh);
+
+        // Build CPU sampler (NO yaw)
+        buildSamplerFromImage(tex.image, scale, bias);
+        sampler.uOffset = 0.0; // ensure drape uses true (lon,lat) → (u,v)
+
+        // If we already have GeoJSON, re-drape it
+        if(lastGeoJSON) drawGeoJSON(lastGeoJSON);
+
+        setStatus(`Heightmap loaded (detail=${detail}, scale=${scale}, bias=${bias})`, 'ok');
+      }catch(err){
+        console.error(err);
+        setStatus('Failed to load heightmap: ' + (err?.message || err), 'bad');
+      }
+    }
+
+    // ---------- GeoJSON (draped) ----------
+    let lastGeoJSON = null;
+
     async function loadGeoJSON(url){
       setStatus('Loading GeoJSON…');
       try{
         const res = await fetch(url, { mode:'cors' });
         if(!res.ok) throw new Error(res.status+' '+res.statusText);
         const gj = await res.json();
+        lastGeoJSON = gj;
         drawGeoJSON(gj);
         setStatus('GeoJSON loaded.', 'ok');
       }catch(err){
@@ -298,82 +322,122 @@
 
     function clearGroup(g){
       for(let i=g.children.length-1;i>=0;i--){
-        const obj = g.children[i];
-        if(obj.geometry) obj.geometry.dispose?.();
-        if(obj.material){
-          if(Array.isArray(obj.material)) obj.material.forEach(m=>m.dispose?.());
-          else obj.material.dispose?.();
+        const o=g.children[i];
+        o.geometry?.dispose?.();
+        if(o.material){
+          if(Array.isArray(o.material)) o.material.forEach(m=>m.dispose?.());
+          else o.material.dispose?.();
         }
-        g.remove(obj);
+        g.remove(o);
       }
+    }
+
+    function densifyLonLat(path, maxDeg=2){
+      if(path.length < 2) return path.map(([lon,lat])=>({lat,lon}));
+      const out = [];
+      for(let i=0;i<path.length-1;i++){
+        let [lon1, lat1] = path[i], [lon2, lat2] = path[i+1];
+        let dlon = ((lon2 - lon1 + 540) % 360) - 180;
+        const dlat = (lat2 - lat1);
+        const steps = Math.max(1, Math.ceil(Math.max(Math.abs(dlon), Math.abs(dlat)) / maxDeg));
+        for(let s=0;s<steps;s++){
+          const t = s/steps;
+          out.push({lat: lat1 + dlat*t, lon: lon1 + dlon*t});
+        }
+      }
+      const [lonF, latF] = path[path.length-1]; out.push({lat:latF, lon:lonF});
+      return out;
+    }
+
+    function drapedPoint(lat, lon, lift=0.0015){
+      // use sampler if available; else fall back to slight shell above R
+      const r = sampler.ready ? radiusAtLL(lat, lon) + lift : R * 1.0012;
+      return llToVec3(lat, lon, r);
     }
 
     function drawGeoJSON(gj){
       clearGroup(geoLayer);
 
-      const matCoast = new THREE.LineBasicMaterial({ color: 0x84c5ff, transparent:true, opacity: 0.85 });
-      const matInner = new THREE.LineBasicMaterial({ color: 0x3aa0ff, transparent:true, opacity: 0.35 });
+      const matCoast = new THREE.LineBasicMaterial({ color: 0x84c5ff, transparent:true, opacity: 0.96, depthWrite:false });
+      const matInner = new THREE.LineBasicMaterial({ color: 0x3aa0ff, transparent:true, opacity: 0.45, depthWrite:false });
+      geoLayer.renderOrder = 2; // draw on top of terrain
+      const LIFT = 0.0015;      // lift to avoid z-fighting
 
       const asLines = (rings, isOuter) => {
         rings.forEach((ring) => {
           const dense = densifyLonLat(ring);
-          const pts = dense.map(p => llToVec3(p.lat, p.lon, R*1.001));
-          if(pts.length>2) pts.push(pts[0].clone()); // close ring
+          const pts = dense.map(p => drapedPoint(p.lat, p.lon, LIFT));
+          if(pts.length>2) pts.push(pts[0].clone()); // close
           const geo = new THREE.BufferGeometry().setFromPoints(pts);
-          const line = new THREE.Line(geo, isOuter ? matCoast : matInner);
-          geoLayer.add(line);
+          geoLayer.add(new THREE.Line(geo, isOuter ? matCoast : matInner));
         });
       };
 
       const walk = (geom) => {
         if(!geom) return;
-        const t = geom.type;
-        if(t === 'Polygon'){
+        if(geom.type === 'Polygon'){
           const rings = geom.coordinates.map(r => r.map(([lon,lat])=>[lon,lat]));
           if(rings.length) asLines([rings[0]], true);
           if(rings.length>1) asLines(rings.slice(1), false);
-        } else if (t === 'MultiPolygon'){
-          geom.coordinates.forEach(poly => {
+        } else if (geom.type === 'MultiPolygon'){
+          geom.coordinates.forEach(poly=>{
             const rings = poly.map(r => r.map(([lon,lat])=>[lon,lat]));
             if(rings.length) asLines([rings[0]], true);
             if(rings.length>1) asLines(rings.slice(1), false);
           });
-        } else if (t === 'LineString'){
-          const line = geom.coordinates.map(([lon,lat])=>[lon,lat]);
-          const dense = densifyLonLat(line);
-          const pts = dense.map(p => llToVec3(p.lat, p.lon, R*1.001));
-          const geo = new THREE.BufferGeometry().setFromPoints(pts);
-          geoLayer.add(new THREE.Line(geo, matCoast));
-        } else if (t === 'MultiLineString'){
+        } else if (geom.type === 'LineString'){
+          const dense = densifyLonLat(geom.coordinates.map(([lon,lat])=>[lon,lat]));
+          const pts = dense.map(p => drapedPoint(p.lat, p.lon, LIFT));
+          geoLayer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), matCoast));
+        } else if (geom.type === 'MultiLineString'){
           geom.coordinates.forEach(line=>{
             const dense = densifyLonLat(line.map(([lon,lat])=>[lon,lat]));
-            const pts = dense.map(p => llToVec3(p.lat, p.lon, R*1.001));
-            const geo = new THREE.BufferGeometry().setFromPoints(pts);
-            geoLayer.add(new THREE.Line(geo, matCoast));
+            const pts = dense.map(p => drapedPoint(p.lat, p.lon, LIFT));
+            geoLayer.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), matCoast));
           });
-        } else if (t === 'GeometryCollection'){
+        } else if (geom.type === 'GeometryCollection'){
           (geom.geometries||[]).forEach(walk);
         }
       };
 
-      if(gj.type === 'FeatureCollection'){
-        for(const f of gj.features||[]){ walk(f.geometry); }
-      } else if (gj.type === 'Feature'){
-        walk(gj.geometry);
-      } else {
-        walk(gj);
-      }
+      if(gj.type === 'FeatureCollection'){ (gj.features||[]).forEach(f=>walk(f.geometry)); }
+      else if (gj.type === 'Feature'){ walk(gj.geometry); }
+      else { walk(gj); }
     }
 
-    // ---------- Probe plotting ----------
-    function plotProbeAt(lat, lon, length=0.6){
-      if(!isFinite(lat) || !isFinite(lon)){
-        setStatus('Invalid lat/lon.', 'bad'); return;
+    // ---------- Geohash + probes ----------
+    function decodeGeohash(gh){
+      const base32 = '0123456789bcdefghjkmnpqrstuvwxyz';
+      let even=true, lat=[-90,90], lon=[-180,180], latErr=90, lonErr=180;
+      for(const ch of (gh||'').toLowerCase()){
+        const cd = base32.indexOf(ch); if(cd===-1) continue;
+        for(let mask=16; mask>0; mask>>=1){
+          if(even){ lonErr/=2; (cd&mask)? (lon[0]=(lon[0]+lon[1])/2) : (lon[1]=(lon[0]+lon[1])/2); }
+          else    { latErr/=2; (cd&mask)? (lat[0]=(lat[0]+lat[1])/2) : (lat[1]=(lat[0]+lat[1])/2); }
+          even=!even;
+        }
       }
+      return { lat:(lat[0]+lat[1])/2, lon:(lon[0]+lon[1])/2, latErr, lonErr };
+    }
+    function encodeGeohash(lat, lon, precision=9){
+      const base32 = '0123456789bcdefghjkmnpqrstuvwxyz';
+      let even=true, latR=[-90,90], lonR=[-180,180], bits=[16,8,4,2,1], ch=0, bit=0, hash='';
+      for(let i=0;i<precision;){
+        if(even){ const mid=(lonR[0]+lonR[1])/2; if(lon>=mid){ch|=bits[bit]; lonR[0]=mid;} else lonR[1]=mid; }
+        else    { const mid=(latR[0]+latR[1])/2; if(lat>=mid){ch|=bits[bit]; latR[0]=mid;} else latR[1]=mid; }
+        even=!even; if(bit<4){bit++;} else {hash+=base32[ch]; i++; ch=0; bit=0;}
+      }
+      return hash;
+    }
+
+    function plotProbeAt(lat, lon, length=0.6){
+      if(!isFinite(lat) || !isFinite(lon)){ setStatus('Invalid lat/lon.', 'bad'); return; }
       lat = Math.max(-90, Math.min(90, lat));
       lon = ((lon + 540) % 360) - 180;
 
-      const base = llToVec3(lat, lon, R*1.002);
+      // Start the probe ON the terrain if sampler ready; otherwise slight shell
+      const r0 = sampler.ready ? radiusAtLL(lat, lon) : R*1.002;
+      const base = llToVec3(lat, lon, r0);
       const dir  = base.clone().normalize();
       const tip  = base.clone().addScaledVector(dir, length);
 
@@ -392,50 +456,38 @@
         new THREE.MeshBasicMaterial({ color: 0xffe066, transparent:true, opacity:0.7, side:THREE.DoubleSide })
       );
       const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0,0,1), dir);
-      ring.quaternion.copy(q);
-      ring.position.copy(base);
+      ring.quaternion.copy(q); ring.position.copy(base);
 
       probeLayer.add(line, tipMesh, ring);
       setStatus(`Plotted @ lat ${lat.toFixed(6)}, lon ${lon.toFixed(6)}`, 'ok');
     }
 
     // ---------- UI wiring ----------
-    const gjurl = $('#gjurl');
-    const loadBtn = $('#load');
-    const ghIn = $('#geohash');
-    const latIn = $('#lat');
-    const lonIn = $('#lon');
-    const lenIn = $('#len');
-    const plotBtn = $('#plot');
-    const clearBtn = $('#clear');
-    const spinChk = $('#spin');
-
     loadBtn.addEventListener('click', ()=> loadGeoJSON(gjurl.value.trim()));
+    loadHMBtn.addEventListener('click', ()=> loadHeightOverlay(
+      hmurl.value.trim(),
+      parseInt(subdivIn.value,10),
+      parseFloat(hscaleIn.value),
+      parseFloat(hbiasIn.value)
+    ));
     plotBtn.addEventListener('click', ()=>{
       const gh = ghIn.value.trim();
-      let lat = parseFloat(latIn.value);
-      let lon = parseFloat(lonIn.value);
-
-      if(gh){
-        const dec = decodeGeohash(gh);
-        lat = dec.lat; lon = dec.lon;
-      }
+      let lat = parseFloat(latIn.value), lon = parseFloat(lonIn.value);
+      if(gh){ const dec = decodeGeohash(gh); lat=dec.lat; lon=dec.lon; }
       const length = parseFloat(lenIn.value) || 0.6;
       plotProbeAt(lat, lon, length);
     });
-    clearBtn.addEventListener('click', ()=> {
-      clearGroup(probeLayer);
-      setStatus('Cleared probes.');
+    clearBtn.addEventListener('click', ()=> { clearGroup(probeLayer); setStatus('Cleared probes.'); });
+
+    [ghIn,latIn,lonIn,lenIn,subdivIn,hscaleIn,hbiasIn].forEach(inp=>{
+      inp.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); plotBtn.click(); }});
     });
 
-    [ghIn,latIn,lonIn,lenIn].forEach(inp => {
-      inp.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ plotBtn.click(); }});
-    });
-
-    // ---------- Click-to-fill inputs (raycast → local → lat/lon) ----------
+    // ---------- Click-to-fill (respect overlay) ----------
     const raycaster = new THREE.Raycaster();
     const ndc = new THREE.Vector2();
     let down = null;
+    const pickTargets = ()=> heightMesh ? [heightMesh, globe] : [globe];
 
     function pointerToNDC(e){
       const rect = renderer.domElement.getBoundingClientRect();
@@ -444,35 +496,34 @@
     }
 
     renderer.domElement.addEventListener('pointerdown', (e)=>{
-      if(e.button !== 0) return;
-      down = {x:e.clientX, y:e.clientY};
+      if(e.button !== 0) return; down = {x:e.clientX, y:e.clientY};
     });
-
     renderer.domElement.addEventListener('pointerup', (e)=>{
       if(e.button !== 0) return;
       if(!down) return;
       const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
-      down = null;
-      if(moved > 5) return; // drag, not click
+      down = null; if(moved > 5) return;
 
       pointerToNDC(e);
       raycaster.setFromCamera(ndc, camera);
-      const hits = raycaster.intersectObject(globe, false); // only the sphere
+      const hits = raycaster.intersectObjects(pickTargets(), true);
       if(!hits.length) return;
 
-      // Convert hit point to GLOBE LOCAL coordinates before inverting
-      const pLocal = globe.worldToLocal(hits[0].point.clone());
+      // Use direction from planet center → hit point to derive lat/lon
+      const worldPoint = hits[0].point.clone();
+      const center = planet.getWorldPosition(new THREE.Vector3());
+      const dir = worldPoint.sub(center).normalize();
+      const pLocal = dir.clone(); // unit sphere direction
       const {lat, lon} = vec3ToLL(pLocal);
 
       latIn.value = lat.toFixed(6);
       lonIn.value = lon.toFixed(6);
       const prec = Math.max(1, Math.min(12, (ghIn.value.trim().length || 9)));
       ghIn.value = encodeGeohash(lat, lon, prec);
-
       setStatus(`Picked @ lat ${lat.toFixed(6)}, lon ${lon.toFixed(6)} • geohash ${ghIn.value}`, 'ok');
     });
 
-    // ---------- Animate ----------
+    // ---------- Run ----------
     let spinning = true;
     spinChk.addEventListener('change', ()=> { spinning = spinChk.checked; });
 
@@ -483,16 +534,15 @@
     }
     addEventListener('resize', onResize);
 
-    // Auto-load default GeoJSON once
+    // Auto load GeoJSON + Heightmap
     loadGeoJSON(gjurl.value.trim());
+    loadHeightOverlay(hmurl.value.trim(), parseInt(subdivIn.value,10), parseFloat(hscaleIn.value), parseFloat(hbiasIn.value));
 
     (function loop(){
       requestAnimationFrame(loop);
       if(spinning){
-        globe.rotation.y += 0.0032;
-        geoLayer.rotation.y += 0.0032;
-        grid.rotation.y += 0.0032;
-        probeLayer.rotation.y += 0.0032;
+        const s = 0.0032;
+        planet.rotation.y += s; // unified rotation (terrain + geojson + probes + grid)
       }
       controls.update();
       renderer.render(scene, camera);
